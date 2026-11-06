@@ -144,7 +144,7 @@ select#selectFornLoja option.done-forn { background:#d4edda; color:#155724; }
     <div class="login-card">
       <img src="logo-coopsintra.png" alt="Cooperativa Agrícola de Sintra" class="login-logo" onerror="this.style.display='none'">
       <h1>Cooperativa Agrícola de Sintra</h1>
-      <p class="sub">Mapa de Stock v2 · Base de fornecedores fixa · Só artigos com vendas 30 dias</p>
+      <p class="sub">Mapa Geral · Base de fornecedores fixa · Só artigos com vendas 30 dias</p>
       <div style="margin-bottom:14px">
         <label>Código do mapa</label>
         <input type="text" id="blobIdInput" placeholder="Vazio = criar novo · ou cole o código do link">
@@ -402,7 +402,6 @@ async function cloudCreate(data) {
   const payload = {
     id,
     lojas: data.lojas || {},
-    stockGeral: data.stockGeral || {},
     updated_at: new Date().toISOString()
   };
   if (!sb) {
@@ -415,10 +414,13 @@ async function cloudCreate(data) {
     return id;
   }
   const row = {
-    id, fornecedor: "multi-v2", lojas: payload.lojas,
-    stockGeral: payload.stockGeral, created_at: new Date().toISOString(), updated_at: payload.updated_at
+    id,
+    fornecedor: "mapa-geral",
+    lojas: payload.lojas,
+    created_at: new Date().toISOString(),
+    updated_at: payload.updated_at
   };
-  const { error } = await sb.from("mapas_stock").insert(row);
+  const { error } = await sb.from("mapas_geral").insert(row);
   if (error) throw new Error(error.message);
   return id;
 }
@@ -443,7 +445,7 @@ async function cloudGet(id) {
     if (!raw) throw new Error("Mapa não encontrado (local)");
     data = JSON.parse(raw);
   } else {
-    const { data: row, error } = await sb.from("mapas_stock").select("*").eq("id", id).single();
+    const { data: row, error } = await sb.from("mapas_geral").select("*").eq("id", id).single();
     if (error) throw new Error(error.message);
     data = row;
   }
@@ -455,31 +457,30 @@ async function cloudGet(id) {
 }
 async function cloudPut(id, data) {
   data.updated_at = new Date().toISOString();
-  // NÃO gravar catalog (base fixa embutida ~1MB estoura localStorage)
+  // Só lojas (vendas + respostas). Catálogo fixo NÃO é gravado.
   const payload = {
     id,
     lojas: data.lojas || {},
-    stockGeral: data.stockGeral || {},
     updated_at: data.updated_at
   };
   if (!sb) {
     try {
       localStorage.setItem("mapa_" + id, JSON.stringify(payload));
     } catch (err) {
-      // limpar mapas antigos e tentar outra vez
       try {
         Object.keys(localStorage).filter(k => k.startsWith("mapa_")).forEach(k => {
           if (k !== "mapa_" + id) localStorage.removeItem(k);
         });
         localStorage.setItem("mapa_" + id, JSON.stringify(payload));
       } catch (e2) {
-        throw new Error("Espaço de armazenamento cheio. Apague dados do site (localStorage) e tente de novo.");
+        throw new Error("Espaço de armazenamento cheio. Limpe o localStorage deste site e tente de novo.");
       }
     }
     return;
   }
-  const { error } = await sb.from("mapas_stock").update({
-    lojas: payload.lojas, stockGeral: payload.stockGeral, updated_at: payload.updated_at
+  const { error } = await sb.from("mapas_geral").update({
+    lojas: payload.lojas,
+    updated_at: payload.updated_at
   }).eq("id", id);
   if (error) throw new Error(error.message);
 }
@@ -583,7 +584,7 @@ async function readSheetRows(file) {
   if (name.endsWith(".csv") || name.endsWith(".txt")) {
     const buf = await file.arrayBuffer();
     let text = new TextDecoder("utf-8").decode(buf);
-    if (text.indexOf("�") >= 0) text = new TextDecoder("windows-1252").decode(buf);
+    if (text.indexOf(" ") >= 0) text = new TextDecoder("windows-1252").decode(buf);
     const wb = XLSX.read(text, { type: "string" });
     return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
   }

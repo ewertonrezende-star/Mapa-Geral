@@ -1222,8 +1222,8 @@ function applyResposta(resp) {
   });
   updateCounts();
 }
-function limparPreenchimento() {
-  if (!confirm("Limpar o preenchimento deste fornecedor?")) return;
+async function limparPreenchimento() {
+  if (!confirm("Limpar o preenchimento deste fornecedor?\n\nApaga os valores no ecrã e remove o estado «guardado» deste fornecedor (passa a contar como por guardar).")) return;
   document.querySelectorAll("#tbody tr").forEach(tr => {
     const inpReal = tr.querySelector(".stock-real");
     const inpAlt = tr.querySelector(".alt-enc");
@@ -1234,7 +1234,25 @@ function limparPreenchimento() {
   document.getElementById("obsGeral").value = "";
   document.getElementById("preenchidoPor").value = "";
   updateCounts();
-  document.getElementById("lojaDataStatus").textContent = "Preenchimento limpo (não guardado)";
+  // Remove resposta guardada deste fornecedor no cloud
+  try {
+    if (blobId && currentLoja && currentForn) {
+      cloudData = await cloudGet(blobId);
+      if (cloudData.lojas && cloudData.lojas[currentLoja] && cloudData.lojas[currentLoja].respostas) {
+        delete cloudData.lojas[currentLoja].respostas[currentForn];
+        await cloudPut(blobId, cloudData);
+      }
+    }
+  } catch (e) {
+    console.warn("Não foi possível remover resposta online:", e);
+  }
+  fillFornSelectsFromSales();
+  if (currentForn) {
+    const sel = document.getElementById("selectFornLoja");
+    if (sel) sel.value = currentForn;
+  }
+  updateEmailGate();
+  document.getElementById("lojaDataStatus").textContent = "Preenchimento limpo · estado guardado removido";
   document.getElementById("lojaDataStatus").className = "status warn";
 }
 
@@ -1325,6 +1343,52 @@ function excelBase64() {
   XLSX.utils.book_append_sheet(wb, ws, "Mapa");
   return { fileName: excelFileName(), base64: XLSX.write(wb, { bookType: "xlsx", type: "base64" }) };
 }
+/** Excel único (1 folha): Artigo | Descrição | Quantidade | Loja | Fornecedor */
+function buildEncomendaUnicaAOA() {
+  const aoa = [["Artigo", "Descrição", "Quantidade", "Loja", "Fornecedor"]];
+  const forns = fornecedoresComVendas();
+  const pub = (cloudData.lojas || {})[currentLoja] || {};
+  const respostas = pub.respostas || {};
+  const lojaCode = currentLoja || "";
+  forns.forEach(forn => {
+    const resp = respostas[forn];
+    if (!resp || !resp.rows) return;
+    resp.rows.forEach(r => {
+      let q = null;
+      if (r.final != null && String(r.final).trim() !== "" && String(r.final).trim() !== "—") {
+        q = Number(r.final);
+      } else if (r.alt != null && String(r.alt).trim() !== "") {
+        q = Number(r.alt);
+      } else if (r.prev != null && String(r.prev).trim() !== "" && String(r.prev).trim() !== "—") {
+        q = Number(r.prev);
+      }
+      if (q == null || isNaN(q) || q <= 0) return; // só linhas com encomenda > 0
+      const art = r.c;
+      const d = (stockData[art] && stockData[art].d) || art;
+      aoa.push([art, d, q, lojaCode, forn]);
+    });
+  });
+  return aoa;
+}
+
+function excelEncomendaFileName() {
+  const lojaNome = (LOJAS[currentLoja] || currentLoja || "loja").replace(/\s/g, "");
+  const dataMapa = document.getElementById("dataMapa").value || todayISO();
+  return "Encomenda_" + lojaNome + "_" + dataMapa + ".xlsx";
+}
+
+function excelEncomendaBase64() {
+  const aoa = buildEncomendaUnicaAOA();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 12 }, { wch: 8 }, { wch: 40 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Encomenda");
+  const fileName = excelEncomendaFileName();
+  const base64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+  return { fileName, base64, aoa };
+}
+
+/** Envia por email (Edge Function enviar-mapa → nuno.justino@coopsintra.pt) — 1 ficheiro, 1 folha */
 async function enviarEmail() {
   const forns = fornecedoresComVendas();
   if (!forns.length) { alert("Sem fornecedores com vendas."); return; }
@@ -1334,39 +1398,69 @@ async function enviarEmail() {
       missing.map(f => f.split(",")[0]).join("\n• "));
     return;
   }
-  // Excel com 1 folha por fornecedor (dados já guardados)
-  const wb = XLSX.utils.book_new();
-  const pub = (cloudData.lojas || {})[currentLoja] || {};
-  const respostas = pub.respostas || {};
-  forns.forEach(forn => {
-    const resp = respostas[forn];
-    const aoa = buildSheetAOAFromResposta(forn, resp);
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [{wch:12},{wch:45},{wch:12},{wch:10},{wch:12},{wch:12},{wch:10},{wch:10},{wch:14}];
-    let sheetName = (forn || "Forn").split(",")[0].replace(/[\\/*?:\[\]]/g, " ").trim().slice(0, 28);
-    if (!sheetName) sheetName = "Forn";
-    // nomes de folha únicos
-    let base = sheetName, n = 2;
-    while (wb.SheetNames.indexOf(sheetName) >= 0) { sheetName = base.slice(0, 25) + "_" + n; n++; }
-    XLSX.utils.book_append_sheet(wb, ws, sheetName);
-  });
-  const lojaNome = (LOJAS[currentLoja] || currentLoja).replace(/\s/g, "");
-  const dataMapa = document.getElementById("dataMapa").value || todayISO();
-  const fname = "Mapa_TodosFornecedores_" + lojaNome + "_" + dataMapa + ".xlsx";
-  XLSX.writeFile(wb, fname);
+  const btn = document.getElementById("btnEmail");
+  if (btn) { btn.disabled = true; btn.textContent = "A enviar…"; }
+  try {
+    if (typeof sb === "undefined" || !sb) initSupabase();
+    const { fileName, base64, aoa } = excelEncomendaBase64();
+    const nLinhas = Math.max(0, aoa.length - 1);
+    if (nLinhas === 0) {
+      alert("Não há linhas com quantidade de encomenda > 0 para enviar.");
+      return;
+    }
+    // Descarga local (cópia de segurança)
+    try {
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 12 }, { wch: 8 }, { wch: 40 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Encomenda");
+      XLSX.writeFile(wb, fileName);
+    } catch (_) {}
 
-  const assunto = encodeURIComponent("Mapa Stock " + lojaNome + " — " + dataMapa + " (" + forns.length + " fornecedores)");
-  const corpo = encodeURIComponent(
-    "Segue o mapa de stock da loja " + lojaNome + ".\n\n" +
-    "Ficheiro: " + fname + "\n" +
-    "Uma folha por fornecedor (" + forns.length + "):\n• " +
-    forns.map(f => f.split(",")[0]).join("\n• ") + "\n\n" +
-    "Anexe o Excel descarregado a este email."
-  );
-  // abre cliente de email; o ficheiro já foi descarregado para anexar
-  window.location.href = "mailto:?subject=" + assunto + "&body=" + corpo;
-  alert("Excel gerado com " + forns.length + " folhas (1 por fornecedor).\\n\\nAnexe o ficheiro descarregado ao email que vai abrir.");
+    const por = document.getElementById("preenchidoPor").value || "(não indicado)";
+    const obs = document.getElementById("obsGeral").value || "(sem observações)";
+    const dataMapa = document.getElementById("dataMapa").value || todayISO();
+    let soma = 0;
+    for (let i = 1; i < aoa.length; i++) soma += Number(aoa[i][2]) || 0;
+
+    const { data, error } = await sb.functions.invoke("enviar-mapa", {
+      body: {
+        lojaCode: currentLoja,
+        lojaNome: LOJAS[currentLoja] || currentLoja,
+        fornecedor: "Todos (" + forns.length + " fornecedores)",
+        dataMapa: dataMapa,
+        preenchidoPor: por,
+        observacoes: obs,
+        artigosComEncomenda: nLinhas,
+        somaEncomendaFinal: soma,
+        fileName: fileName,
+        fileBase64: base64,
+        destino: "nuno.justino@coopsintra.pt"
+      }
+    });
+    if (error) throw new Error(error.message || String(error));
+    if (data && data.error) throw new Error(data.error);
+    alert(
+      "Email enviado com sucesso para compras (nuno.justino@coopsintra.pt).\n\n" +
+      "Loja: " + (LOJAS[currentLoja] || currentLoja) + " (" + currentLoja + ")\n" +
+      "Ficheiro: " + fileName + "\n" +
+      "Linhas: " + nLinhas + " · 1 folha · colunas Artigo | Descrição | Quantidade | Loja | Fornecedor"
+    );
+  } catch (e) {
+    console.error(e);
+    alert(
+      "Erro ao enviar email:\n\n" + (e.message || e) +
+      "\n\nO Excel foi descarregado neste computador. Pode anexá-lo manualmente a:\nnuno.justino@coopsintra.pt\n\n" +
+      "Confirme se a function «enviar-mapa» está publicada no Supabase."
+    );
+  } finally {
+    if (btn) {
+      updateEmailGate();
+      btn.textContent = "Enviar por email";
+    }
+  }
 }
+
 function buildSheetAOAFromResposta(forn, resp) {
   const aoa = [];
   aoa.push(["Loja", LOJAS[currentLoja] || currentLoja]);

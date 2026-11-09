@@ -319,6 +319,7 @@ const FIXED_CATALOG = {"21421040":{"d":"PROVI manjerecria 104 pintos iniciaçao 
 
 /* ========== STATE ========== */
 let sb = null;
+let portalSSOAutorizado = false;
 let blobId = null;
 let cloudData = { lojas: {}, catalog: FIXED_CATALOG, stockGeral: {} };
 let currentLoja = null;
@@ -588,7 +589,7 @@ function mostrarLojaSelect() {
 async function entrarCentral() {
   limparStorageMapasAntigos();
   const pwd = (document.getElementById("centralPwd") || {}).value || "";
-  if (!isAuthed("central")) {
+  if (!portalSSOAutorizado && !isAuthed("central")) {
     if (pwd !== CENTRAL_PWD) {
       document.getElementById("homeMsg").innerHTML = '<span class="status err">Senha incorreta</span>';
       return;
@@ -623,7 +624,7 @@ async function entrarCentral() {
 async function entrarLoja() {
   const loja = document.getElementById("selectLojaHome").value;
   const pwd = (document.getElementById("lojaPwd") || {}).value || "";
-  if (!isAuthed(loja)) {
+  if (!portalSSOAutorizado && !isAuthed(loja)) {
     if (pwd !== LOJA_PWDS[loja]) {
       document.getElementById("homeMsg").innerHTML = '<span class="status err">Senha da loja incorreta</span>';
       return;
@@ -1503,6 +1504,66 @@ document.addEventListener("DOMContentLoaded", () => {
   if (lp) lp.addEventListener("keydown", e => { if (e.key === "Enter") entrarLoja(); });
   atualizarBotaoEsquecer();
 });
+
+
+/* Entrada segura pelo Portal COOPSINTRA: valida a sessão Supabase e o perfil.
+   O token chega por postMessage, nunca pela URL. */
+window.addEventListener("message", async function(event) {
+  if (event.origin !== "https://ewertonrezende-star.github.io" || event.source !== window.parent) return;
+  const payload = event.data || {};
+  if (payload.type !== "COOPSINTRA_PORTAL_AUTH" || !payload.access_token || !payload.refresh_token) return;
+
+  const msg = document.getElementById("homeMsg");
+  try {
+    const params = new URLSearchParams(location.search);
+    const modoPortal = params.get("portal");
+    const lojaPortal = params.get("loja");
+    if (!["central", "loja"].includes(modoPortal)) throw new Error("Modo de acesso do Portal inválido.");
+
+    initSupabase();
+    const authClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: "coopsintra-portal-bridge" }
+    });
+    const { data: sessionData, error: sessionError } = await authClient.auth.setSession({
+      access_token: payload.access_token,
+      refresh_token: payload.refresh_token
+    });
+    if (sessionError) throw sessionError;
+    const user = sessionData && sessionData.user;
+    if (!user) throw new Error("A sessão do Portal não foi validada.");
+
+    const { data: perfilPortal, error: perfilError } = await authClient
+      .from("portal_perfis").select("nome, perfil, loja").eq("user_id", user.id).maybeSingle();
+    if (perfilError || !perfilPortal) throw new Error("Não foi possível confirmar as permissões deste utilizador.");
+
+    if (perfilPortal.perfil === "gestao") {
+      if (modoPortal === "central") {
+        portalSSOAutorizado = true;
+        await entrarCentral();
+      } else {
+        if (!lojaPortal || !LOJAS[lojaPortal]) throw new Error("A loja selecionada é inválida.");
+        document.getElementById("selectLojaHome").value = lojaPortal;
+        portalSSOAutorizado = true;
+        await entrarLoja();
+      }
+    } else if (perfilPortal.perfil === "loja") {
+      if (modoPortal !== "loja" || !perfilPortal.loja || lojaPortal !== perfilPortal.loja) {
+        throw new Error("Este utilizador só pode abrir o mapa da sua própria loja.");
+      }
+      document.getElementById("selectLojaHome").value = perfilPortal.loja;
+      portalSSOAutorizado = true;
+      await entrarLoja();
+    } else {
+      throw new Error("Perfil sem autorização para abrir os mapas.");
+    }
+  } catch (error) {
+    portalSSOAutorizado = false;
+    console.error("Falha na autenticação pelo Portal:", error);
+    if (msg) msg.innerHTML = '<span class="status err">' + (error.message || "Não foi possível validar a sessão do Portal.") + '</span>';
+    showScreen("screenHome");
+  }
+});
+
 </script>
 </body>
 </html>

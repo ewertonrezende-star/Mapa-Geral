@@ -7,8 +7,10 @@
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0B3D6B">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Mapa Stock">
+<meta name="apple-mobile-web-app-title" content="Mapa Geral">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
@@ -167,7 +169,7 @@ select#selectFornLoja option.done-forn { background:#d4edda; color:#155724; }
       </div>
       <div class="loja-select-wrap" id="lojaSelectWrap">
         <label>Loja</label>
-        <select id="selectLojaHome">
+        <select id="selectLojaHome" onchange="atualizarLabelSenhaLoja()">
           <option value="AL">Albarraque</option>
           <option value="AM">Arneiro Marinheiro</option>
           <option value="CO">Colares</option>
@@ -176,12 +178,17 @@ select#selectFornLoja option.done-forn { background:#d4edda; color:#155724; }
           <option value="SA">Sabugo</option>
         </select>
         <div style="margin-top:10px">
-          <label>Senha da loja</label>
+          <label id="labelSenhaLoja">Senha da loja</label>
           <input type="password" id="lojaPwd" placeholder="Senha da loja" autocomplete="current-password">
         </div>
         <button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="entrarLoja()">Abrir mapa</button>
       </div>
       <div id="homeMsg" style="margin-top:12px"></div>
+      <button type="button" class="btn btn-secondary" id="btnForgetAuth"
+        style="margin-top:10px;width:100%;display:none;font-size:12px"
+        onclick="esquecerAuthNestePC()">
+        Esquecer senhas neste computador
+      </button>
     </div>
   </div>
 </div>
@@ -486,20 +493,107 @@ async function cloudPut(id, data) {
 }
 
 /* ========== LOGIN ========== */
-function mostrarCentralPwd() {
-  document.getElementById("centralPwdWrap").style.display = "block";
+
+/* ========== LEMBRAR AUTENTICAÇÃO NESTE PC ========== */
+const AUTH_KEY = "mapa_geral_auth_v1";
+function loadAuth() {
+  try { return JSON.parse(localStorage.getItem(AUTH_KEY) || "{}"); }
+  catch (e) { return {}; }
+}
+function saveAuth(obj) {
+  localStorage.setItem(AUTH_KEY, JSON.stringify(obj));
+}
+function isAuthed(role) {
+  return !!loadAuth()[role];
+}
+function setAuthed(role) {
+  const a = loadAuth();
+  a[role] = true;
+  a["ts_" + role] = Date.now();
+  saveAuth(a);
+  atualizarBotaoEsquecer();
+}
+function clearAuthed(role) {
+  const a = loadAuth();
+  delete a[role];
+  delete a["ts_" + role];
+  saveAuth(a);
+  atualizarBotaoEsquecer();
+}
+function esquecerAuthNestePC() {
+  if (!confirm("Remover as senhas guardadas neste computador?")) return;
+  localStorage.removeItem(AUTH_KEY);
+  const btn = document.getElementById("btnForgetAuth");
+  if (btn) btn.style.display = "none";
+  document.getElementById("centralPwdWrap").style.display = "none";
   document.getElementById("lojaSelectWrap").style.display = "none";
+  document.getElementById("homeMsg").innerHTML = '<span class="status ok">Senhas esquecidas neste PC.</span>';
+  const cp = document.getElementById("centralPwd");
+  const lp = document.getElementById("lojaPwd");
+  if (cp) { cp.value = ""; cp.placeholder = "Introduza a senha"; }
+  if (lp) { lp.value = ""; lp.placeholder = "Senha da loja"; }
+}
+function atualizarBotaoEsquecer() {
+  const a = loadAuth();
+  const has = Object.keys(a).some(k => !k.startsWith("ts_"));
+  const btn = document.getElementById("btnForgetAuth");
+  if (btn) btn.style.display = has ? "block" : "none";
+}
+function atualizarLabelSenhaLoja() {
+  const cod = document.getElementById("selectLojaHome").value;
+  const nome = LOJAS[cod] || cod;
+  const authed = isAuthed(cod);
+  const lab = document.getElementById("labelSenhaLoja");
+  if (lab) {
+    lab.textContent = authed
+      ? "Senha da loja (" + nome + ") — já guardada neste PC"
+      : "Senha da loja (" + nome + ")";
+  }
+  const lp = document.getElementById("lojaPwd");
+  if (lp) {
+    lp.placeholder = authed ? "Já autenticado neste computador" : "Senha da loja";
+    if (authed) lp.value = "";
+  }
+}
+
+function mostrarCentralPwd() {
+  document.getElementById("lojaSelectWrap").style.display = "none";
+  document.getElementById("homeMsg").innerHTML = "";
+  if (isAuthed("central")) {
+    document.getElementById("centralPwdWrap").style.display = "none";
+    entrarCentral();
+    return;
+  }
+  document.getElementById("centralPwdWrap").style.display = "block";
+  atualizarBotaoEsquecer();
+  setTimeout(() => {
+    const el = document.getElementById("centralPwd");
+    if (el) el.focus();
+  }, 50);
 }
 function mostrarLojaSelect() {
-  document.getElementById("lojaSelectWrap").style.display = "block";
   document.getElementById("centralPwdWrap").style.display = "none";
+  document.getElementById("lojaSelectWrap").style.display = "block";
+  document.getElementById("homeMsg").innerHTML = "";
+  atualizarLabelSenhaLoja();
+  atualizarBotaoEsquecer();
+  const cod = document.getElementById("selectLojaHome").value;
+  if (!isAuthed(cod)) {
+    setTimeout(() => {
+      const el = document.getElementById("lojaPwd");
+      if (el) el.focus();
+    }, 50);
+  }
 }
 async function entrarCentral() {
   limparStorageMapasAntigos();
-  const pwd = document.getElementById("centralPwd").value;
-  if (pwd !== CENTRAL_PWD) {
-    document.getElementById("homeMsg").innerHTML = '<span class="status err">Senha incorreta</span>';
-    return;
+  const pwd = (document.getElementById("centralPwd") || {}).value || "";
+  if (!isAuthed("central")) {
+    if (pwd !== CENTRAL_PWD) {
+      document.getElementById("homeMsg").innerHTML = '<span class="status err">Senha incorreta</span>';
+      return;
+    }
+    setAuthed("central");
   }
   initSupabase();
   let id = (document.getElementById("blobIdInput").value || "").trim() || getUrlBlobId();
@@ -528,10 +622,13 @@ async function entrarCentral() {
 }
 async function entrarLoja() {
   const loja = document.getElementById("selectLojaHome").value;
-  const pwd = document.getElementById("lojaPwd").value;
-  if (pwd !== LOJA_PWDS[loja]) {
-    document.getElementById("homeMsg").innerHTML = '<span class="status err">Senha da loja incorreta</span>';
-    return;
+  const pwd = (document.getElementById("lojaPwd") || {}).value || "";
+  if (!isAuthed(loja)) {
+    if (pwd !== LOJA_PWDS[loja]) {
+      document.getElementById("homeMsg").innerHTML = '<span class="status err">Senha da loja incorreta</span>';
+      return;
+    }
+    setAuthed(loja);
   }
   initSupabase();
   let id = (document.getElementById("blobIdInput").value || "").trim() || getUrlBlobId();
@@ -571,6 +668,7 @@ async function entrarLoja() {
   }
   showScreen("screenLoja");
 }
+
 function voltarHome() { showScreen("screenHome"); }
 function copiarLink() {
   const link = shareLink();
@@ -1309,6 +1407,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const lp = document.getElementById("lojaPwd");
   if (cp) cp.addEventListener("keydown", e => { if (e.key === "Enter") entrarCentral(); });
   if (lp) lp.addEventListener("keydown", e => { if (e.key === "Enter") entrarLoja(); });
+  atualizarBotaoEsquecer();
 });
 </script>
 </body>

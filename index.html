@@ -1419,7 +1419,9 @@ async function enviarEmail() {
     } catch (_) {}
 
     const por = document.getElementById("preenchidoPor").value || "(não indicado)";
-    const obs = document.getElementById("obsGeral").value || "(sem observações)";
+    const campoObs = document.getElementById("obsGeral");
+    const obs = campoObs ? campoObs.value.trim() : "";
+    const observacoes = obs || "(sem observações)";
     const dataMapa = document.getElementById("dataMapa").value || todayISO();
     let soma = 0;
     for (let i = 1; i < aoa.length; i++) soma += Number(aoa[i][2]) || 0;
@@ -1431,7 +1433,9 @@ async function enviarEmail() {
         fornecedor: "Todos (" + forns.length + " fornecedores)",
         dataMapa: dataMapa,
         preenchidoPor: por,
-        observacoes: obs,
+        observacoes: observacoes,
+        observacao: observacoes,
+        obs: observacoes,
         artigosComEncomenda: nLinhas,
         somaEncomendaFinal: soma,
         fileName: fileName,
